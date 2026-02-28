@@ -7,7 +7,7 @@
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   html,body{width:100%;height:100%;overflow:hidden;background:#000}
-  canvas{display:block;width:100%;height:100%}
+  canvas{display:block;width:100%;height:100%;touch-action:none}
   #hint{
     position:fixed;bottom:28px;left:50%;transform:translateX(-50%);
     font-family:'Courier New',monospace;font-size:13px;color:rgba(180,210,255,.85);
@@ -17,19 +17,70 @@
     transition:opacity 1.5s ease;opacity:1;pointer-events:none;z-index:10;
   }
   #hint.fade{opacity:0}
+  #sizeHint{
+    position:fixed;top:22px;left:50%;transform:translateX(-50%);
+    font-family:'Courier New',monospace;font-size:14px;color:rgba(80,170,255,.9);
+    background:rgba(10,15,35,.7);border:1px solid rgba(80,130,255,.3);
+    padding:6px 18px;border-radius:14px;letter-spacing:1px;
+    box-shadow:0 0 14px rgba(60,120,255,.2);
+    pointer-events:none;z-index:10;opacity:0;transition:opacity 0.3s ease;
+  }
+  #hud{
+    position:fixed;top:16px;right:16px;z-index:10;
+    padding:10px 12px;border-radius:12px;
+    border:1px solid rgba(80,130,255,.25);
+    background:rgba(6,10,22,.65);
+    color:rgba(190,220,255,.9);
+    font-family:'Courier New',monospace;font-size:12px;line-height:1.5;
+    letter-spacing:.3px;pointer-events:none;
+    box-shadow:0 0 14px rgba(60,120,255,.15);
+  }
+  #controls{
+    position:fixed;left:16px;top:16px;z-index:11;
+    width:min(320px,calc(100vw - 32px));
+    border:1px solid rgba(80,130,255,.35);
+    background:rgba(6,10,22,.78);
+    border-radius:14px;
+    padding:12px;
+    box-shadow:0 0 18px rgba(60,120,255,.18);
+    color:rgba(200,225,255,.95);
+    font-family:'Courier New',monospace;
+  }
+  #controls h2{
+    margin:0 0 10px 0;font-size:13px;letter-spacing:.8px;
+    text-transform:uppercase;color:rgba(130,190,255,.95);
+  }
+  .ctl{margin:8px 0}
+  .ctl label{
+    display:flex;justify-content:space-between;align-items:center;
+    font-size:12px;margin-bottom:4px;
+  }
+  .ctl output{color:rgba(150,210,255,.95)}
+  .ctl input[type="range"]{
+    width:100%;accent-color:#66a8ff;
+  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hint">drag to orbit • wheel to zoom • shift+drag to resize cube</div>
-<div id="sizeHint" style="
-  position:fixed;top:22px;left:50%;transform:translateX(-50%);
-  font-family:'Courier New',monospace;font-size:14px;color:rgba(80,170,255,.9);
-  background:rgba(10,15,35,.7);border:1px solid rgba(80,130,255,.3);
-  padding:6px 18px;border-radius:14px;letter-spacing:1px;
-  box-shadow:0 0 14px rgba(60,120,255,.2);
-  pointer-events:none;z-index:10;opacity:0;transition:opacity 0.3s ease;
-"></div>
+<div id="sizeHint"></div>
+<div id="hud" aria-live="polite"></div>
+<section id="controls" aria-label="Simulation controls">
+  <h2>Control Panel</h2>
+  <div class="ctl">
+    <label for="speedCtl">Speed <output id="speedOut">1.0x</output></label>
+    <input id="speedCtl" type="range" min="0.2" max="2.5" step="0.1" value="1.0">
+  </div>
+  <div class="ctl">
+    <label for="growthCtl">Growth <output id="growthOut">4.5/s</output></label>
+    <input id="growthCtl" type="range" min="0" max="14" step="0.5" value="4.5">
+  </div>
+  <div class="ctl">
+    <label for="catsCtl">Cats <output id="catsOut">2</output></label>
+    <input id="catsCtl" type="range" min="0" max="2" step="1" value="2">
+  </div>
+</section>
 <script>
 "use strict";
 // ── Vector helpers ──
@@ -47,6 +98,13 @@ const rnd=(lo,hi)=>lo+(hi-lo)*Math.random();
 // ── Canvas setup ──
 const canvas=document.getElementById('c');
 const ctx=canvas.getContext('2d');
+const hudEl=document.getElementById('hud');
+const speedCtl=document.getElementById('speedCtl');
+const growthCtl=document.getElementById('growthCtl');
+const catsCtl=document.getElementById('catsCtl');
+const speedOut=document.getElementById('speedOut');
+const growthOut=document.getElementById('growthOut');
+const catsOut=document.getElementById('catsOut');
 let W,H,dpr;
 function resize(){
   dpr=window.devicePixelRatio||1;
@@ -62,6 +120,9 @@ let yaw=-0.4, pitch=0.35, camDist=5.5, scalePx=280;
 let dragging=false, dragX=0, dragY=0, resizing=false;
 const sizeHintEl=document.getElementById('sizeHint');
 let sizeHintTimeout=0;
+let paused=false;
+let simSpeed=1.0;
+let catsCount=2;
 
 canvas.addEventListener('pointerdown',e=>{
   dragging=true;dragX=e.clientX;dragY=e.clientY;
@@ -108,6 +169,7 @@ window.addEventListener('pointermove',e=>{
   }
 });
 window.addEventListener('pointerup',()=>{dragging=false;resizing=false;canvas.style.cursor='default'});
+window.addEventListener('pointercancel',()=>{dragging=false;resizing=false;canvas.style.cursor='default'});
 // Also track shift key state changes mid-drag
 window.addEventListener('keydown',e=>{if(e.key==='Shift'&&dragging){resizing=true;canvas.style.cursor='ns-resize'}});
 window.addEventListener('keyup',e=>{if(e.key==='Shift'){resizing=false;canvas.style.cursor='default'}});
@@ -158,7 +220,7 @@ let ptsNow=[...cubeVerts.map(v=>v3(v.x,v.y,v.z))];
 let edges=cubeEdgeIdx.map(([a,b])=>({a,b,bornAt:0,isBase:true}));
 let growing=false;
 const maxPts=1000;
-const spawnPerSec=4.5;
+let spawnPerSec=4.5;
 let spawnAccum=0;
 
 function nearestIdx(p,arr){
@@ -231,7 +293,9 @@ for(let i=0;i<600;i++){
     depth:0.3+Math.random()*0.7,
     twPhase:Math.random()*Math.PI*2,
     twSpeed:0.5+Math.random()*2,
-    size:0.4+Math.random()*1.8
+    size:0.4+Math.random()*1.8,
+    hue:210+Math.random()*20,
+    light:80+Math.random()*20
   });
 }
 
@@ -244,7 +308,7 @@ function drawStars(t){
     const r=s.size*(0.5+tw*0.5);
     ctx.save();
     ctx.globalAlpha=alpha*s.depth;
-    ctx.fillStyle=`hsl(${210+Math.random()*20},60%,${80+tw*20}%)`;
+    ctx.fillStyle=`hsl(${s.hue},60%,${Math.min(98,s.light+tw*8)}%)`;
     ctx.shadowColor='rgba(160,200,255,0.6)';
     ctx.shadowBlur=4+tw*4;
     ctx.beginPath();
@@ -253,6 +317,26 @@ function drawStars(t){
     ctx.restore();
   }
 }
+
+function refreshControlOutputs(){
+  speedOut.textContent=`${simSpeed.toFixed(1)}x`;
+  growthOut.textContent=`${spawnPerSec.toFixed(1)}/s`;
+  catsOut.textContent=String(catsCount);
+}
+
+speedCtl.addEventListener('input',()=>{
+  simSpeed=parseFloat(speedCtl.value);
+  refreshControlOutputs();
+});
+growthCtl.addEventListener('input',()=>{
+  spawnPerSec=parseFloat(growthCtl.value);
+  refreshControlOutputs();
+});
+catsCtl.addEventListener('input',()=>{
+  catsCount=parseInt(catsCtl.value,10);
+  refreshControlOutputs();
+});
+refreshControlOutputs();
 
 // ── Cat entities ──
 function makeCat(pathOffset,startDelay){
@@ -282,32 +366,32 @@ function pathFn(t,off){
 }
 
 const catRadius=0.1;
-const maxSpeed=9.0;
-const drag=0.96;
+const maxSpeed=5.2;
+const drag=0.94;
 const bounceDamp=0.86;
 
 function updateCat(cat,dt,t,otherCat,idx){
   if(!cat.active)return;
-  cat.t+=dt*6.0;
+  cat.t+=dt*2.4;
 
   // Wander
   if(t>cat.wanderNext){
-    cat.wander=v3(rnd(-2.4,2.4),rnd(-2.4,2.4),rnd(-2.4,2.4));
-    cat.wanderNext=t+0.05+Math.random()*0.1;
+    cat.wander=v3(rnd(-1.0,1.0),rnd(-1.0,1.0),rnd(-1.0,1.0));
+    cat.wanderNext=t+0.18+Math.random()*0.27;
   }
 
   // Steering
   const target=pathFn(cat.t,idx*2.5);
-  let steer=vadd(vscale(vsub(target,cat.pos),10.0),cat.wander);
+  let steer=vadd(vscale(vsub(target,cat.pos),4.8),cat.wander);
 
   // Separation
   if(otherCat.active){
     const sep=vsub(cat.pos,otherCat.pos);
     const sd=vlen(sep);
-    if(sd<0.5&&sd>0.001)steer=vadd(steer,vscale(vnorm(sep),2.0/sd));
+    if(sd<0.5&&sd>0.001)steer=vadd(steer,vscale(vnorm(sep),1.2/sd));
   }
 
-  steer=vclamp(steer,20.0);
+  steer=vclamp(steer,10.0);
   cat.vel=vadd(cat.vel,vscale(steer,dt));
   cat.vel=vclamp(cat.vel,maxSpeed);
   cat.vel=vscale(cat.vel,drag);
@@ -518,17 +602,18 @@ function drawNetwork(mat,t){
     ctx.restore();
   }
 
-  // Nodes (small dots)
-  for(let i=8;i<ptsNow.length;i++){
+  // Endpoint dots for all line termini (internal + cube corners)
+  for(let i=0;i<ptsNow.length;i++){
     const p=proj[i];
     const depthFrac=Math.max(0,Math.min(1,(p.z-2)/(camDist*2)));
+    const isCorner=i<8;
     ctx.save();
-    ctx.globalAlpha=0.3+(1-depthFrac)*0.5;
-    ctx.fillStyle=`hsl(${30+depthFrac*20},100%,70%)`;
-    ctx.shadowColor='rgba(255,200,50,0.4)';
-    ctx.shadowBlur=3;
+    ctx.globalAlpha=(isCorner?0.62:0.34)+(1-depthFrac)*(isCorner?0.26:0.44);
+    ctx.fillStyle=isCorner?'rgba(120,190,255,0.95)':`hsl(${30+depthFrac*20},100%,70%)`;
+    ctx.shadowColor=isCorner?'rgba(110,180,255,0.65)':'rgba(255,200,50,0.4)';
+    ctx.shadowBlur=isCorner?6:3;
     ctx.beginPath();
-    ctx.arc(p.x,p.y,1+((1-depthFrac)*1.5),0,Math.PI*2);
+    ctx.arc(p.x,p.y,(isCorner?1.8:1)+((1-depthFrac)*(isCorner?1.4:1.5)),0,Math.PI*2);
     ctx.fill();
     ctx.restore();
   }
@@ -553,12 +638,63 @@ function drawNetwork(mat,t){
 let timeMs=0, lastFrame=0, spinning=false;
 const startTime=performance.now();
 
+function resetCamera(){
+  yaw=-0.4;
+  pitch=0.35;
+  scalePx=280;
+}
+
+function setHint(text,ms=1400){
+  sizeHintEl.textContent=text;
+  sizeHintEl.style.opacity='1';
+  clearTimeout(sizeHintTimeout);
+  sizeHintTimeout=setTimeout(()=>{sizeHintEl.style.opacity='0'},ms);
+}
+
+function updateHud(){
+  const activeCats=(cat1.active&&catsCount>=1?1:0)+(cat2.active&&catsCount>=2?1:0);
+  hudEl.textContent=
+    `pts ${ptsNow.length} | edges ${edges.length} | cube ${(S*2).toFixed(2)} | cats ${activeCats}\n`+
+    `speed ${simSpeed.toFixed(1)}x | grow ${spawnPerSec.toFixed(1)}/s | space pause ${paused?'on':'off'}\n`+
+    `r reset view | g grow ${growing?'on':'off'} | c cycle cats`;
+}
+
+window.addEventListener('keydown',e=>{
+  if(e.repeat)return;
+  const k=e.key.toLowerCase();
+  if(k===' '){
+    paused=!paused;
+    e.preventDefault();
+    setHint(paused?'Paused':'Resumed',900);
+    updateHud();
+  }else if(k==='r'){
+    resetCamera();
+    setHint('Camera reset',900);
+    updateHud();
+  }else if(k==='g'){
+    growing=!growing;
+    setHint(`Growth ${growing?'on':'off'}`,900);
+    updateHud();
+  }else if(k==='c'){
+    catsCount=(catsCount+1)%3;
+    catsCtl.value=String(catsCount);
+    refreshControlOutputs();
+    setHint(`Cats set to ${catsCount}`,900);
+    updateHud();
+  }
+});
+
 function frame(now){
   requestAnimationFrame(frame);
   if(!lastFrame)lastFrame=now;
   let dt=(now-lastFrame)/1000;
   if(dt>0.04)dt=0.04;
   lastFrame=now;
+  if(paused){
+    updateHud();
+    return;
+  }
+  dt*=simSpeed;
   timeMs=(now-startTime)/1000;
 
   // Timeline
@@ -579,8 +715,12 @@ function frame(now){
   }
 
   // Update cats
-  updateCat(cat1,dt,timeMs,cat2,0);
-  updateCat(cat2,dt,timeMs,cat1,1);
+  if(catsCount>=1){
+    updateCat(cat1,dt,timeMs,cat2,0);
+  }
+  if(catsCount>=2){
+    updateCat(cat2,dt,timeMs,cat1,1);
+  }
 
   const mat=buildRot(yaw,pitch);
 
@@ -591,8 +731,13 @@ function frame(now){
   drawNetwork(mat,timeMs);
 
   // Draw cats
-  drawCat2D(cat1,mat,'rgba(255,160,40,0.8)','rgba(255,140,30,0.6)',0);
-  drawCat2D(cat2,mat,'rgba(170,120,255,0.8)','rgba(150,100,240,0.6)',1);
+  if(catsCount>=1){
+    drawCat2D(cat1,mat,'rgba(255,160,40,0.8)','rgba(255,140,30,0.6)',0);
+  }
+  if(catsCount>=2){
+    drawCat2D(cat2,mat,'rgba(170,120,255,0.8)','rgba(150,100,240,0.6)',1);
+  }
+  updateHud();
 }
 
 requestAnimationFrame(frame);

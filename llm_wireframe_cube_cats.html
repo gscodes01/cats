@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Wireframe Cube + Cats</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#000}
+  canvas{display:block;width:100%;height:100%;touch-action:none}
+  #hint{
+    position:fixed;bottom:28px;left:50%;transform:translateX(-50%);
+    font-family:'Courier New',monospace;font-size:13px;color:rgba(180,210,255,.85);
+    background:rgba(10,15,35,.65);border:1px solid rgba(80,130,255,.3);
+    padding:8px 22px;border-radius:20px;letter-spacing:1px;
+    box-shadow:0 0 18px rgba(60,120,255,.15);
+    transition:opacity 1.5s ease;opacity:1;pointer-events:none;z-index:10;
+  }
+  #hint.fade{opacity:0}
+  #sizeHint{
+    position:fixed;top:22px;left:50%;transform:translateX(-50%);
+    font-family:'Courier New',monospace;font-size:14px;color:rgba(80,170,255,.9);
+    background:rgba(10,15,35,.7);border:1px solid rgba(80,130,255,.3);
+    padding:6px 18px;border-radius:14px;letter-spacing:1px;
+    box-shadow:0 0 14px rgba(60,120,255,.2);
+    pointer-events:none;z-index:10;opacity:0;transition:opacity 0.3s ease;
+  }
+  #hud{
+    position:fixed;top:16px;right:16px;z-index:10;
+    padding:10px 12px;border-radius:12px;
+    border:1px solid rgba(80,130,255,.25);
+    background:rgba(6,10,22,.65);
+    color:rgba(190,220,255,.9);
+    font-family:'Courier New',monospace;font-size:12px;line-height:1.5;
+    letter-spacing:.3px;pointer-events:none;
+    box-shadow:0 0 14px rgba(60,120,255,.15);
+  }
+  #controls{
+    position:fixed;left:16px;top:16px;z-index:11;
+    width:min(320px,calc(100vw - 32px));
+    border:1px solid rgba(80,130,255,.35);
+    background:rgba(6,10,22,.78);
+    border-radius:14px;
+    padding:12px;
+    box-shadow:0 0 18px rgba(60,120,255,.18);
+    color:rgba(200,225,255,.95);
+    font-family:'Courier New',monospace;
+  }
+  #controls h2{
+    margin:0 0 10px 0;font-size:13px;letter-spacing:.8px;
+    text-transform:uppercase;color:rgba(130,190,255,.95);
+  }
+  .ctl{margin:8px 0}
+  .ctl label{
+    display:flex;justify-content:space-between;align-items:center;
+    font-size:12px;margin-bottom:4px;
+  }
+  .ctl output{color:rgba(150,210,255,.95)}
+  .ctl input[type="range"]{
+    width:100%;accent-color:#66a8ff;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">drag to orbit • wheel to zoom • shift+drag to resize cube</div>
+<div id="sizeHint"></div>
+<div id="hud" aria-live="polite"></div>
+<section id="controls" aria-label="Simulation controls">
+  <h2>Control Panel</h2>
+  <div class="ctl">
+    <label for="speedCtl">Speed <output id="speedOut">1.0x</output></label>
+    <input id="speedCtl" type="range" min="0.2" max="2.5" step="0.1" value="1.0">
+  </div>
+  <div class="ctl">
+    <label for="growthCtl">Growth <output id="growthOut">4.5/s</output></label>
+    <input id="growthCtl" type="range" min="0" max="14" step="0.5" value="4.5">
+  </div>
+  <div class="ctl">
+    <label for="catsCtl">Cats <output id="catsOut">2</output></label>
+    <input id="catsCtl" type="range" min="0" max="2" step="1" value="2">
+  </div>
+</section>
+<script>
+"use strict";
+// ── Vector helpers ──
+const v3=(x,y,z)=>({x,y,z});
+const vadd=(a,b)=>v3(a.x+b.x,a.y+b.y,a.z+b.z);
+const vsub=(a,b)=>v3(a.x-b.x,a.y-b.y,a.z-b.z);
+const vscale=(a,s)=>v3(a.x*s,a.y*s,a.z*s);
+const vlen=(a)=>Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z);
+const vdot=(a,b)=>a.x*b.x+a.y*b.y+a.z*b.z;
+const vnorm=(a)=>{const l=vlen(a)||1;return vscale(a,1/l)};
+const vlerp=(a,b,t)=>v3(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.z+(b.z-a.z)*t);
+const vclamp=(a,mx)=>{const l=vlen(a);return l>mx?vscale(a,mx/l):a};
+const rnd=(lo,hi)=>lo+(hi-lo)*Math.random();
+
+// ── Canvas setup ──
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const hudEl=document.getElementById('hud');
+const speedCtl=document.getElementById('speedCtl');
+const growthCtl=document.getElementById('growthCtl');
+const catsCtl=document.getElementById('catsCtl');
+const speedOut=document.getElementById('speedOut');
+const growthOut=document.getElementById('growthOut');
+const catsOut=document.getElementById('catsOut');
+let W,H,dpr;
+function resize(){
+  dpr=window.devicePixelRatio||1;
+  W=window.innerWidth;H=window.innerHeight;
+  canvas.width=W*dpr;canvas.height=H*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+resize();
+window.addEventListener('resize',resize);
+
+// ── Camera ──
+let yaw=-0.4, pitch=0.35, camDist=5.5, scalePx=280;
+let dragging=false, dragX=0, dragY=0, resizing=false;
+const sizeHintEl=document.getElementById('sizeHint');
+let sizeHintTimeout=0;
+let paused=false;
+let simSpeed=1.0;
+let catsCount=2;
+
+canvas.addEventListener('pointerdown',e=>{
+  dragging=true;dragX=e.clientX;dragY=e.clientY;
+  resizing=e.shiftKey;
+  if(resizing)canvas.style.cursor='ns-resize';
+});
+window.addEventListener('pointermove',e=>{
+  if(!dragging)return;
+  if(resizing||e.shiftKey){
+    resizing=true;
+    canvas.style.cursor='ns-resize';
+    // Drag up = bigger, drag down = smaller
+    const dy=(dragY-e.clientY)*0.004;
+    const oldS=S;
+    S=Math.max(MIN_S,Math.min(MAX_S,S+dy));
+    if(S!==oldS){
+      const ratio=S/oldS;
+      // Uniformly scale ALL points (including internal) to preserve structure
+      for(let i=0;i<ptsNow.length;i++){
+        ptsNow[i]=vscale(ptsNow[i],ratio);
+      }
+      updateCubeVerts();
+      rebuildEdgeBoxes();
+      // Clamp cats inside
+      for(const cat of cats){
+        cat.pos=vscale(cat.pos,ratio);
+        const lim=S-catRadius;
+        cat.pos.x=Math.max(-lim,Math.min(lim,cat.pos.x));
+        cat.pos.y=Math.max(-lim,Math.min(lim,cat.pos.y));
+        cat.pos.z=Math.max(-lim,Math.min(lim,cat.pos.z));
+      }
+      // Show size indicator
+      sizeHintEl.textContent=`Cube size: ${(S*2).toFixed(2)}`;
+      sizeHintEl.style.opacity='1';
+      clearTimeout(sizeHintTimeout);
+      sizeHintTimeout=setTimeout(()=>{sizeHintEl.style.opacity='0'},1200);
+    }
+    dragX=e.clientX;dragY=e.clientY;
+  }else{
+    yaw+=(e.clientX-dragX)*0.006;
+    pitch+=(e.clientY-dragY)*0.006;
+    pitch=Math.max(-1.2,Math.min(1.2,pitch));
+    dragX=e.clientX;dragY=e.clientY;
+  }
+});
+window.addEventListener('pointerup',()=>{dragging=false;resizing=false;canvas.style.cursor='default'});
+window.addEventListener('pointercancel',()=>{dragging=false;resizing=false;canvas.style.cursor='default'});
+// Also track shift key state changes mid-drag
+window.addEventListener('keydown',e=>{if(e.key==='Shift'&&dragging){resizing=true;canvas.style.cursor='ns-resize'}});
+window.addEventListener('keyup',e=>{if(e.key==='Shift'){resizing=false;canvas.style.cursor='default'}});
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  scalePx*=e.deltaY>0?0.93:1.07;
+  scalePx=Math.max(100,Math.min(800,scalePx));
+},{passive:false});
+
+// ── 3D projection ──
+function buildRot(yaw,pitch){
+  const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+  return[cy,0,sy, sy*sp,cp,-cy*sp, -sy*cp,sp,cy*cp];
+}
+function rotV(m,p){
+  return v3(m[0]*p.x+m[1]*p.y+m[2]*p.z,m[3]*p.x+m[4]*p.y+m[5]*p.z,m[6]*p.x+m[7]*p.y+m[8]*p.z);
+}
+function project3(p,mat){
+  const r=rotV(mat,p);
+  const z=r.z+camDist;
+  const f=scalePx/(z<0.1?0.1:z);
+  return{x:W/2+r.x*f, y:H/2-r.y*f, z:z, f};
+}
+
+// ── Cube ──
+let S=1;
+const MIN_S=0.3, MAX_S=3.0;
+let cubeVerts=[
+  v3(-S,-S,-S),v3(S,-S,-S),v3(S,S,-S),v3(-S,S,-S),
+  v3(-S,-S,S),v3(S,-S,S),v3(S,S,S),v3(-S,S,S)
+];
+const cubeEdgeIdx=[
+  [0,1],[1,2],[2,3],[3,0],
+  [4,5],[5,6],[6,7],[7,4],
+  [0,4],[1,5],[2,6],[3,7]
+];
+function updateCubeVerts(){
+  cubeVerts=[
+    v3(-S,-S,-S),v3(S,-S,-S),v3(S,S,-S),v3(-S,S,-S),
+    v3(-S,-S,S),v3(S,-S,S),v3(S,S,S),v3(-S,S,S)
+  ];
+  // Update the first 8 points in the network (cube corners)
+  for(let i=0;i<8;i++){ptsNow[i]=v3(cubeVerts[i].x,cubeVerts[i].y,cubeVerts[i].z)}
+}
+
+// ── Network ──
+let ptsNow=[...cubeVerts.map(v=>v3(v.x,v.y,v.z))];
+let edges=cubeEdgeIdx.map(([a,b])=>({a,b,bornAt:0,isBase:true}));
+let growing=false;
+const maxPts=1000;
+let spawnPerSec=4.5;
+let spawnAccum=0;
+
+function nearestIdx(p,arr){
+  let best=-1,bd=1e9;
+  for(let i=0;i<arr.length;i++){
+    const d=vlen(vsub(arr[i],p));
+    if(d<bd){bd=d;best=i}
+  }
+  return best;
+}
+
+function edgeExists(a,b){
+  for(const e of edges)if((e.a===a&&e.b===b)||(e.a===b&&e.b===a))return true;
+  return false;
+}
+
+function spawnPoint(t){
+  const mode=Math.random();
+  let p;
+  if(mode<0.55){
+    p=v3(rnd(-S,S),rnd(-S,S),rnd(-S,S));
+  }else if(mode<0.82){
+    const face=Math.floor(Math.random()*6);
+    const u=rnd(-S,S),v2=rnd(-S,S);
+    if(face===0)p=v3(-S,u,v2);
+    else if(face===1)p=v3(S,u,v2);
+    else if(face===2)p=v3(u,-S,v2);
+    else if(face===3)p=v3(u,S,v2);
+    else if(face===4)p=v3(u,v2,-S);
+    else p=v3(u,v2,S);
+  }else{
+    const ei=cubeEdgeIdx[Math.floor(Math.random()*12)];
+    const tt=Math.random();
+    p=vlerp(cubeVerts[ei[0]],cubeVerts[ei[1]],tt);
+  }
+  const ni=nearestIdx(p,ptsNow);
+  const idx=ptsNow.length;
+  ptsNow.push(p);
+  if(!edgeExists(idx,ni))edges.push({a:idx,b:ni,bornAt:t,isBase:false});
+}
+
+// ── Edge bounding boxes for collision ──
+let edgeBoxes=[];
+const PAD=0.08;
+function rebuildEdgeBoxes(){
+  edgeBoxes=edges.map(e=>{
+    const a=ptsNow[e.a],b=ptsNow[e.b];
+    return{
+      e,
+      minX:Math.min(a.x,b.x)-PAD,maxX:Math.max(a.x,b.x)+PAD,
+      minY:Math.min(a.y,b.y)-PAD,maxY:Math.max(a.y,b.y)+PAD,
+      minZ:Math.min(a.z,b.z)-PAD,maxZ:Math.max(a.z,b.z)+PAD
+    };
+  });
+}
+rebuildEdgeBoxes();
+
+function closestPtOnSeg(p,a,b){
+  const ab=vsub(b,a),ap=vsub(p,a);
+  let t=vdot(ap,ab)/vdot(ab,ab);
+  t=Math.max(0,Math.min(1,t));
+  return vadd(a,vscale(ab,t));
+}
+
+// ── Starfield ──
+const stars=[];
+for(let i=0;i<600;i++){
+  stars.push({
+    x:Math.random()*2-1, y:Math.random()*2-1,
+    depth:0.3+Math.random()*0.7,
+    twPhase:Math.random()*Math.PI*2,
+    twSpeed:0.5+Math.random()*2,
+    size:0.4+Math.random()*1.8,
+    hue:210+Math.random()*20,
+    light:80+Math.random()*20
+  });
+}
+
+function drawStars(t){
+  for(const s of stars){
+    const px=W/2+s.x*W*0.6-yaw*12*s.depth;
+    const py=H/2+s.y*H*0.6-pitch*8*s.depth;
+    const tw=Math.sin(s.twPhase+t*s.twSpeed)*0.5+0.5;
+    const alpha=0.25+tw*0.6;
+    const r=s.size*(0.5+tw*0.5);
+    ctx.save();
+    ctx.globalAlpha=alpha*s.depth;
+    ctx.fillStyle=`hsl(${s.hue},60%,${Math.min(98,s.light+tw*8)}%)`;
+    ctx.shadowColor='rgba(160,200,255,0.6)';
+    ctx.shadowBlur=4+tw*4;
+    ctx.beginPath();
+    ctx.arc(((px%W)+W)%W,((py%H)+H)%H,r,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function refreshControlOutputs(){
+  speedOut.textContent=`${simSpeed.toFixed(1)}x`;
+  growthOut.textContent=`${spawnPerSec.toFixed(1)}/s`;
+  catsOut.textContent=String(catsCount);
+}
+
+speedCtl.addEventListener('input',()=>{
+  simSpeed=parseFloat(speedCtl.value);
+  refreshControlOutputs();
+});
+growthCtl.addEventListener('input',()=>{
+  spawnPerSec=parseFloat(growthCtl.value);
+  refreshControlOutputs();
+});
+catsCtl.addEventListener('input',()=>{
+  catsCount=parseInt(catsCtl.value,10);
+  refreshControlOutputs();
+});
+refreshControlOutputs();
+
+// ── Cat entities ──
+function makeCat(pathOffset,startDelay){
+  return{
+    pos:v3(rnd(-0.5,0.5),rnd(-0.5,0.5),rnd(-0.5,0.5)),
+    vel:v3(0,0,0),
+    t:pathOffset,
+    wander:v3(0,0,0),
+    wanderNext:0,
+    trail:[],
+    timers:{flash:0,flashColor:0,lastBounceAt:-999},
+    active:false,
+    startDelay
+  };
+}
+
+const cat1=makeCat(0,3);
+const cat2=makeCat(Math.PI,15);
+const cats=[cat1,cat2];
+
+function pathFn(t,off){
+  return v3(
+    Math.sin(t*0.37+off)*0.6*S,
+    Math.cos(t*0.29+off*1.3)*0.55*S,
+    Math.sin(t*0.43+off*0.7)*0.5*S
+  );
+}
+
+const catRadius=0.1;
+const maxSpeed=5.2;
+const drag=0.94;
+const bounceDamp=0.86;
+
+function updateCat(cat,dt,t,otherCat,idx){
+  if(!cat.active)return;
+  cat.t+=dt*2.4;
+
+  // Wander
+  if(t>cat.wanderNext){
+    cat.wander=v3(rnd(-1.0,1.0),rnd(-1.0,1.0),rnd(-1.0,1.0));
+    cat.wanderNext=t+0.18+Math.random()*0.27;
+  }
+
+  // Steering
+  const target=pathFn(cat.t,idx*2.5);
+  let steer=vadd(vscale(vsub(target,cat.pos),4.8),cat.wander);
+
+  // Separation
+  if(otherCat.active){
+    const sep=vsub(cat.pos,otherCat.pos);
+    const sd=vlen(sep);
+    if(sd<0.5&&sd>0.001)steer=vadd(steer,vscale(vnorm(sep),1.2/sd));
+  }
+
+  steer=vclamp(steer,10.0);
+  cat.vel=vadd(cat.vel,vscale(steer,dt));
+  cat.vel=vclamp(cat.vel,maxSpeed);
+  cat.vel=vscale(cat.vel,drag);
+  cat.pos=vadd(cat.pos,vscale(cat.vel,dt));
+
+  // Wall collisions
+  const lim=S-catRadius;
+  for(const axis of ['x','y','z']){
+    if(cat.pos[axis]>lim){cat.pos[axis]=lim;cat.vel[axis]*=-bounceDamp;triggerFlash(cat,t)}
+    if(cat.pos[axis]<-lim){cat.pos[axis]=-lim;cat.vel[axis]*=-bounceDamp;triggerFlash(cat,t)}
+  }
+
+  // Edge collisions
+  for(const box of edgeBoxes){
+    if(cat.pos.x<box.minX-catRadius||cat.pos.x>box.maxX+catRadius)continue;
+    if(cat.pos.y<box.minY-catRadius||cat.pos.y>box.maxY+catRadius)continue;
+    if(cat.pos.z<box.minZ-catRadius||cat.pos.z>box.maxZ+catRadius)continue;
+    const a=ptsNow[box.e.a],b=ptsNow[box.e.b];
+    const cp=closestPtOnSeg(cat.pos,a,b);
+    const diff=vsub(cat.pos,cp);
+    const d2=vdot(diff,diff);
+    if(d2<catRadius*catRadius&&d2>0.0001){
+      const d=Math.sqrt(d2);
+      const n=vscale(diff,1/d);
+      cat.pos=vadd(cp,vscale(n,catRadius+0.005));
+      const vn=vdot(cat.vel,n);
+      if(vn<0)cat.vel=vsub(cat.vel,vscale(n,2*vn*bounceDamp));
+      triggerFlash(cat,t);
+    }
+  }
+
+  // Flash timers
+  cat.timers.flash=Math.max(0,cat.timers.flash-dt*1000);
+  cat.timers.flashColor=Math.max(0,cat.timers.flashColor-dt*1000);
+}
+
+function triggerFlash(cat,t){
+  if(t-cat.timers.lastBounceAt<0.12)return;
+  cat.timers.flash=300;cat.timers.flashColor=300;cat.timers.lastBounceAt=t;
+}
+
+// ── Draw cat face ──
+function drawCat2D(cat,mat,trailColor,trailGlow,idx){
+  if(!cat.active)return;
+  const pp=project3(cat.pos,mat);
+  const headR=Math.max(10,Math.min(30,pp.f*0.08));
+  const spd=vlen(cat.vel);
+  const sR=headR*(1+spd*0.1);
+
+  // Trail
+  cat.trail.push({x:pp.x,y:pp.y,t:performance.now()});
+  if(cat.trail.length>75)cat.trail.shift();
+  const flashBoost=cat.timers.flash>0?0.4:0;
+  for(let i=0;i<cat.trail.length;i++){
+    const frac=i/cat.trail.length;
+    const a=(0.05+frac*0.7+flashBoost)*Math.min(1,(performance.now()-cat.trail[i].t)/50);
+    const r=1+frac*3.5;
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.fillStyle=trailColor;
+    ctx.shadowColor=trailGlow;
+    ctx.shadowBlur=6+frac*8;
+    ctx.beginPath();
+    ctx.arc(cat.trail[i].x,cat.trail[i].y,r,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.translate(pp.x,pp.y);
+
+  // Head
+  const baseColor=idx===0?'#f5a623':'#b48aed';
+  const outline=idx===0?'#c47a10':'#7c5bbf';
+  ctx.fillStyle=baseColor;
+  ctx.strokeStyle=outline;
+  ctx.lineWidth=1.5;
+  ctx.shadowColor=cat.timers.flashColor>0?'#fff':(idx===0?'rgba(255,180,60,0.4)':'rgba(160,120,240,0.4)');
+  ctx.shadowBlur=cat.timers.flashColor>0?18:6;
+  ctx.beginPath();
+  ctx.arc(0,0,sR,0,Math.PI*2);
+  ctx.fill();ctx.stroke();
+  ctx.shadowBlur=0;
+
+  // Ears
+  ctx.fillStyle=baseColor;ctx.strokeStyle=outline;
+  ctx.beginPath();
+  ctx.moveTo(-sR*0.65,-sR*0.5);
+  ctx.lineTo(-sR*0.85,-sR*1.35);
+  ctx.lineTo(-sR*0.1,-sR*0.85);
+  ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(sR*0.65,-sR*0.5);
+  ctx.lineTo(sR*0.85,-sR*1.35);
+  ctx.lineTo(sR*0.1,-sR*0.85);
+  ctx.closePath();ctx.fill();ctx.stroke();
+
+  // Inner ears
+  ctx.fillStyle=idx===0?'#ffccaa':'#d4bfff';
+  ctx.beginPath();
+  ctx.moveTo(-sR*0.55,-sR*0.6);
+  ctx.lineTo(-sR*0.72,-sR*1.1);
+  ctx.lineTo(-sR*0.2,-sR*0.8);
+  ctx.closePath();ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(sR*0.55,-sR*0.6);
+  ctx.lineTo(sR*0.72,-sR*1.1);
+  ctx.lineTo(sR*0.2,-sR*0.8);
+  ctx.closePath();ctx.fill();
+
+  // Eyes - compute direction
+  const ahead=vadd(cat.pos,vscale(cat.vel,0.5));
+  const ap=project3(ahead,mat);
+  let dx=ap.x-pp.x, dy=ap.y-pp.y;
+  const dl=Math.sqrt(dx*dx+dy*dy)||1;
+  dx/=dl;dy/=dl;
+  const pupilOff=sR*0.15;
+
+  // Eye whites
+  ctx.fillStyle='#fff';
+  ctx.beginPath();ctx.ellipse(-sR*0.32,-sR*0.12,sR*0.22,sR*0.26,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(sR*0.32,-sR*0.12,sR*0.22,sR*0.26,0,0,Math.PI*2);ctx.fill();
+
+  // Pupils
+  ctx.fillStyle='#222';
+  ctx.beginPath();ctx.arc(-sR*0.32+dx*pupilOff,-sR*0.12+dy*pupilOff,sR*0.11,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(sR*0.32+dx*pupilOff,-sR*0.12+dy*pupilOff,sR*0.11,0,Math.PI*2);ctx.fill();
+
+  // Eye glints
+  ctx.fillStyle='#fff';
+  ctx.beginPath();ctx.arc(-sR*0.28+dx*pupilOff*0.3,-sR*0.18+dy*pupilOff*0.3,sR*0.04,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(sR*0.36+dx*pupilOff*0.3,-sR*0.18+dy*pupilOff*0.3,sR*0.04,0,Math.PI*2);ctx.fill();
+
+  // Nose
+  ctx.fillStyle=idx===0?'#e87':'#c87adb';
+  ctx.beginPath();
+  ctx.moveTo(0,sR*0.15);
+  ctx.lineTo(-sR*0.1,sR*0.25);
+  ctx.lineTo(sR*0.1,sR*0.25);
+  ctx.closePath();ctx.fill();
+
+  // Mouth
+  ctx.strokeStyle='#a55';ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.moveTo(0,sR*0.25);
+  ctx.quadraticCurveTo(-sR*0.15,sR*0.42,-sR*0.22,sR*0.35);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0,sR*0.25);
+  ctx.quadraticCurveTo(sR*0.15,sR*0.42,sR*0.22,sR*0.35);
+  ctx.stroke();
+
+  // Whiskers
+  ctx.strokeStyle='rgba(80,60,40,0.6)';ctx.lineWidth=0.8;
+  for(let side=-1;side<=1;side+=2){
+    for(let j=0;j<3;j++){
+      const angle=-0.3+j*0.3;
+      ctx.beginPath();
+      ctx.moveTo(side*sR*0.3,sR*0.18+j*sR*0.06);
+      ctx.quadraticCurveTo(side*sR*0.8,sR*(0.05+j*0.08)+Math.sin(angle)*sR*0.2,side*sR*1.3,sR*(0.0+j*0.12));
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+// ── Background gradient ──
+function drawBg(){
+  const grd=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*0.7);
+  grd.addColorStop(0,'#0a0e1f');
+  grd.addColorStop(0.5,'#060a16');
+  grd.addColorStop(1,'#020308');
+  ctx.fillStyle=grd;
+  ctx.fillRect(0,0,W,H);
+}
+
+// ── Draw network ──
+function drawNetwork(mat,t){
+  // Project all points
+  const proj=ptsNow.map(p=>project3(p,mat));
+
+  // Build sorted edge list
+  const sortedEdges=edges.map((e,i)=>{
+    const za=(proj[e.a].z+proj[e.b].z)*0.5;
+    return{e,za,i};
+  });
+  sortedEdges.sort((a,b)=>b.za-a.za);
+
+  // Draw internal edges first, then base edges
+  for(const{e}of sortedEdges){
+    if(e.isBase)continue;
+    const pa=proj[e.a],pb=proj[e.b];
+    const avgZ=(pa.z+pb.z)/2;
+    const depthFrac=Math.max(0,Math.min(1,(avgZ-2)/(camDist*2)));
+    const hue=10+depthFrac*(-45)+45;// closer=yellow, far=red
+    const age=Math.min(1,(t*1000-e.bornAt)/8000);
+    const lw=1.2+(1-depthFrac)*1.8;
+    const alpha=0.5+age*0.3+(1-depthFrac)*0.2;
+    ctx.save();
+    ctx.strokeStyle=`hsla(${hue},95%,${55+depthFrac*10}%,${alpha})`;
+    ctx.lineWidth=lw;
+    ctx.shadowColor=`hsla(${hue},100%,60%,0.5)`;
+    ctx.shadowBlur=4+(1-depthFrac)*4;
+    ctx.beginPath();
+    ctx.moveTo(pa.x,pa.y);ctx.lineTo(pb.x,pb.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Endpoint dots for all line termini (internal + cube corners)
+  for(let i=0;i<ptsNow.length;i++){
+    const p=proj[i];
+    const depthFrac=Math.max(0,Math.min(1,(p.z-2)/(camDist*2)));
+    const isCorner=i<8;
+    ctx.save();
+    ctx.globalAlpha=(isCorner?0.62:0.34)+(1-depthFrac)*(isCorner?0.26:0.44);
+    ctx.fillStyle=isCorner?'rgba(120,190,255,0.95)':`hsl(${30+depthFrac*20},100%,70%)`;
+    ctx.shadowColor=isCorner?'rgba(110,180,255,0.65)':'rgba(255,200,50,0.4)';
+    ctx.shadowBlur=isCorner?6:3;
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,(isCorner?1.8:1)+((1-depthFrac)*(isCorner?1.4:1.5)),0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Base cube edges last
+  for(const{e}of sortedEdges){
+    if(!e.isBase)continue;
+    const pa=proj[e.a],pb=proj[e.b];
+    ctx.save();
+    ctx.strokeStyle='rgba(80,160,255,0.75)';
+    ctx.lineWidth=2;
+    ctx.shadowColor='rgba(60,140,255,0.6)';
+    ctx.shadowBlur=12;
+    ctx.beginPath();
+    ctx.moveTo(pa.x,pa.y);ctx.lineTo(pb.x,pb.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ── Main loop ──
+let timeMs=0, lastFrame=0, spinning=false;
+const startTime=performance.now();
+
+function resetCamera(){
+  yaw=-0.4;
+  pitch=0.35;
+  scalePx=280;
+}
+
+function setHint(text,ms=1400){
+  sizeHintEl.textContent=text;
+  sizeHintEl.style.opacity='1';
+  clearTimeout(sizeHintTimeout);
+  sizeHintTimeout=setTimeout(()=>{sizeHintEl.style.opacity='0'},ms);
+}
+
+function updateHud(){
+  const activeCats=(cat1.active&&catsCount>=1?1:0)+(cat2.active&&catsCount>=2?1:0);
+  hudEl.textContent=
+    `pts ${ptsNow.length} | edges ${edges.length} | cube ${(S*2).toFixed(2)} | cats ${activeCats}\n`+
+    `speed ${simSpeed.toFixed(1)}x | grow ${spawnPerSec.toFixed(1)}/s | space pause ${paused?'on':'off'}\n`+
+    `r reset view | g grow ${growing?'on':'off'} | c cycle cats`;
+}
+
+window.addEventListener('keydown',e=>{
+  if(e.repeat)return;
+  const k=e.key.toLowerCase();
+  if(k===' '){
+    paused=!paused;
+    e.preventDefault();
+    setHint(paused?'Paused':'Resumed',900);
+    updateHud();
+  }else if(k==='r'){
+    resetCamera();
+    setHint('Camera reset',900);
+    updateHud();
+  }else if(k==='g'){
+    growing=!growing;
+    setHint(`Growth ${growing?'on':'off'}`,900);
+    updateHud();
+  }else if(k==='c'){
+    catsCount=(catsCount+1)%3;
+    catsCtl.value=String(catsCount);
+    refreshControlOutputs();
+    setHint(`Cats set to ${catsCount}`,900);
+    updateHud();
+  }
+});
+
+function frame(now){
+  requestAnimationFrame(frame);
+  if(!lastFrame)lastFrame=now;
+  let dt=(now-lastFrame)/1000;
+  if(dt>0.04)dt=0.04;
+  lastFrame=now;
+  if(paused){
+    updateHud();
+    return;
+  }
+  dt*=simSpeed;
+  timeMs=(now-startTime)/1000;
+
+  // Timeline
+  if(timeMs>2.5)growing=true;
+  if(timeMs>cat1.startDelay)cat1.active=true;
+  if(timeMs>cat2.startDelay)cat2.active=true;
+  if(timeMs>20)spinning=true;
+
+  // Auto-spin
+  if(spinning&&!dragging&&!resizing)yaw+=dt*0.08;
+
+  // Grow network
+  if(growing&&ptsNow.length<maxPts){
+    spawnAccum+=spawnPerSec*dt;
+    const count=Math.min(Math.floor(spawnAccum),5);
+    for(let i=0;i<count;i++){spawnPoint(timeMs);spawnAccum--}
+    if(count>0)rebuildEdgeBoxes();
+  }
+
+  // Update cats
+  if(catsCount>=1){
+    updateCat(cat1,dt,timeMs,cat2,0);
+  }
+  if(catsCount>=2){
+    updateCat(cat2,dt,timeMs,cat1,1);
+  }
+
+  const mat=buildRot(yaw,pitch);
+
+  // ── Render ──
+  ctx.clearRect(0,0,W,H);
+  drawBg();
+  drawStars(timeMs);
+  drawNetwork(mat,timeMs);
+
+  // Draw cats
+  if(catsCount>=1){
+    drawCat2D(cat1,mat,'rgba(255,160,40,0.8)','rgba(255,140,30,0.6)',0);
+  }
+  if(catsCount>=2){
+    drawCat2D(cat2,mat,'rgba(170,120,255,0.8)','rgba(150,100,240,0.6)',1);
+  }
+  updateHud();
+}
+
+requestAnimationFrame(frame);
+
+// Fade hint
+setTimeout(()=>document.getElementById('hint').classList.add('fade'),6000);
+</script>
+</body>
+</html>

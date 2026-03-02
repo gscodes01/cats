@@ -74,7 +74,7 @@
   </div>
   <div class="ctl">
     <label for="growthCtl">Growth <output id="growthOut">4.5/s</output></label>
-    <input id="growthCtl" type="range" min="0" max="14" step="0.5" value="4.5">
+    <input id="growthCtl" type="range" min="0" max="14" step="0.5" value="2.5">
   </div>
   <div class="ctl">
     <label for="catsCtl">Cats <output id="catsOut">2</output></label>
@@ -220,7 +220,7 @@ let ptsNow=[...cubeVerts.map(v=>v3(v.x,v.y,v.z))];
 let edges=cubeEdgeIdx.map(([a,b])=>({a,b,bornAt:0,isBase:true}));
 let growing=false;
 const maxPts=1000;
-let spawnPerSec=4.5;
+let spawnPerSec=2.5;
 let spawnAccum=0;
 
 function nearestIdx(p,arr){

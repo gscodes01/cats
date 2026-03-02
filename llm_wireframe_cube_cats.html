@@ -697,8 +697,8 @@ function drawNetwork(mat,t){
     const isCorner=i<8;
     ctx.save();
     ctx.globalAlpha=(isCorner?0.62:0.34)+(1-depthFrac)*(isCorner?0.26:0.44);
-    ctx.fillStyle=isCorner?'rgba(120,190,255,0.95)':`hsl(${30+depthFrac*20},100%,70%)`;
-    ctx.shadowColor=isCorner?'rgba(110,180,255,0.65)':'rgba(255,200,50,0.4)';
+    ctx.fillStyle='rgba(120,190,255,0.95)';
+    ctx.shadowColor='rgba(110,180,255,0.65)';
     ctx.shadowBlur=isCorner?6:3;
     ctx.beginPath();
     ctx.arc(p.x,p.y,(isCorner?1.8:1)+((1-depthFrac)*(isCorner?1.4:1.5)),0,Math.PI*2);

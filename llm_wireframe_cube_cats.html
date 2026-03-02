@@ -453,7 +453,7 @@ function pathFn(t,off){
   );
 }
 
-const catRadius=0.1;
+const catRadius=0.14;
 const maxSpeed=5.2;
 const drag=0.94;
 const bounceDamp=0.86;
@@ -525,7 +525,7 @@ function triggerFlash(cat,t){
 function drawCat2D(cat,mat,trailColor,trailGlow,idx){
   if(!cat.active)return;
   const pp=project3(cat.pos,mat);
-  const headR=Math.max(10,Math.min(30,pp.f*0.08));
+  const headR=Math.max(13,Math.min(38,pp.f*0.11));
   const spd=vlen(cat.vel);
   const sR=headR*(1+spd*0.1);
 
